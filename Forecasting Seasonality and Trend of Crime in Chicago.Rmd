@@ -1,0 +1,361 @@
+---
+title: 'Forecast Seasonality and Trend of Crime in Chicago'
+author: "Achmad Gunar Saadi"
+date: "September 23, 2018"
+output:
+  html_document:
+    toc: TRUE
+    toc_depth: 3
+    toc_float:
+      collapsed: FALSE
+    highlight:  pygments
+    theme: spacelab
+    number_sections: TRUE
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction {.tabset}
+## Objectives
+__Project: Forecast Seasonality and Trend of Crime in Chicago__<br />
+
+Download the data set from Chicago Crime Portal [(https://data.cityofchicago.org/Public-Safety/Crimes-2001-to-present/ijzp-q8t2)](https://data.cityofchicago.org/Public-Safety/Crimes-2001-to-present/ijzp-q8t2) and use a sample of these data to build a forecasting project where you inspect the seasonality and trend of crime in Chicago. The data contains a variety of offenses, but in our case focus on kidnapping type of crime. <br />
+
+The following questions can be guidance to obtain good results:<br />
+
+- Is crime generally rising in Chicago in the past decade (last 10 years)?
+- Is there a seasonal component to the crime rate?
+- Which time series method seems to capture the variation in your time series better? Explain your choice of algorithm and its key assumptions.
+
+## Data Explanation
+
+The dataset reflects reported incidents crime that occurred in the City of Chicago from 2001 to present. Data is extracted from the Chicago Police Department's CLEAR (Citizen Law Enforcement Analysis and Reporting) system.<br />
+These crimes may be based upon preliminary information supplied to the Police Department by the reporting parties that have no been verified.<br />
+
+As for 22 variables in the dataset as below: <br />
+**ID**: Unique udentifier for each record.(numeric)<br />
+**Case Number**: The Chicago Police Department Records Division Number, which is unique to the incident.(text)<br />
+**Date**: Date and time when the incident occurred or sometimes the best estimate.(timestamp)<br />
+**Block**: The partially redacted address where the incident occurred, placing it on the same block as the actual address.(text)<br />
+**IUCR**: The Illinois Uniform Crime Reporting code which covers Index and Non-index criminal offenses. This is directly linked to the Primary Type and Description.(text)<br />
+**Primary Type**: The primary description of the IUCR code. (text)<br />
+**Description**: The secondary description of the IUCR code. (text)<br />
+**Location Description**: Description of the location where the incident occurred.(text)<br />
+**Arrest**: Indicates whether an arrest was made.(checkbox: TRUE or FALSE)<br />
+**Domestic**: Indicates whether the incident was domestic-related as defined by the Illinois Domestic Violence Act.(checkbox: TRUE or FALSE)<br />
+**Beat**: Indicates the beat where the incident occurred. A beat is the smallest police geographic area. Three to five beats make up a police sector. Three sectors make up a police district.(text)<br />
+**District**: Indicates the district where the incident occurred.(text)<br />
+**Ward**: The ward (City or Council district) where the incident occurred.(numeric)<br />
+**Community Area**: Indicates the community area where the incident occurred.(text)<br />
+**FBI Code**: Indicates the crime classification as outlined in the FBI's National Incident-Based Reporting System (NIBRS).(text)<br />
+**X Coordinate**: The x  coordinate of the location where the incident occurred in State Plane Illinois East NAD 1983 projection. This location is shifted from the actual location for partial redaction but falls on the same block.(numeric)<br />
+**Y Coordinates**: The y coordinate of the location where the incident occurred in State Plane Illinois East NAD 1983 projection. This location is shifted from the actual location for partial redaction but falls on the same block.(numeric)<br />
+**Year**: The year incident occurred.(numeric)<br />
+**Updated On**: Date and time the record was last updated.(timestamp)<br />
+**Latitude**: The latitude of the location where the incident occurred. This location is shifted from the actual location for partial redaction but falls on the same block.(numeric)<br />
+**Longitude**: The longitude of the location where the incident occurred. This location is shifted from the actual location for partial redaction but falls on the same block.(numeric)<br />
+**Location**: The location (Latitude, Longitude) where the incident occurred in a format that allows for creation of maps and other geographic operations on this data portal. This location is shifted from the actual location for partial redaction but falls on the same block.(point of location)<br />
+
+## Read and Understand the Dataset
+
+```{r}
+# Load the libraries needed
+library(lubridate)
+library(dplyr)
+library(xts)
+library(forecast)
+library(MLmetrics)
+library(TTR)
+library(fpp)
+```
+
+Since the dataset filesize is large and too time-consuming to load it, I set the `eval=FALSE`. Also we save the dataset as RDS file and read it then. <br />
+The dataset has 6,701,787 observations and 22 columns (mentioned above) in total. <br />
+I create the same dataset but focus in the *kidnapping* primary type crime which containing 6641 observations and 22 columns. Then save it as RDS file.<br />
+
+```{r,eval=FALSE}
+crimes <- read.csv("./Crimes_-_2001_to_present.csv")
+saveRDS(crimes, file="crimes.RDS")
+```
+
+```{r}
+crimes<-readRDS("crimes.RDS")
+crimes.k<-crimes[crimes$`Primary Type`=="KIDNAPPING",]
+#saveRDS(crimes.k,file="kidnapping.RDS")
+#crimes.k<-readRDS("kidnapping.RDS")
+dim(crimes.k)
+```
+
+There are missing values (NA) in several variables. Precisely, the NA values are inhibited in _13th, 14th, 16th, 17th, 20th, 21st,22nd_ columns. That means in _Ward, Community Area, X Coordinate, Y Coordinate, Latitude, Longitude, Location_ variables.<br />
+
+```{r}
+for (ii in 1:ncol(crimes.k)){
+  print(anyNA(crimes.k[,ii]))
+}
+```
+```{r}
+names(crimes.k[,c(13,14,16,17,20,21,22)])
+```
+
+# Pre-processing
+
+This is how the data looks like after sorted by date (only display the first 10 data and the last 10 data).<br />
+By using str(), we can tell that each variables has various range of value.<br /> 
+
+```{r}
+crimes_ed<-crimes.k[order(mdy_hms(crimes.k$Date)),]
+head(crimes_ed,10)
+tail(crimes_ed,10)
+str(crimes_ed)
+```
+
+The dataset comprises integer (numeric), text, and timestamp data-type. We'd like separate the date and time to flexibility in processing later. After that, we add the *Date.YMD* variable as the 23rd columns (containing date in format _%m%y%d_). <br />
+In addition, as can be seen, the range of the timeseries is from `1st January 2001` to `12th September 2018`. <br />
+
+## More deeper with the dataset
+
+```{r}
+# Check the range of date
+dt<-parse_date_time(crimes_ed$Date, orders = "mdy HMS")
+dt.d<-as.Date(dt)
+range(dt.d)
+crimes_ed$Date.YMD<-dt.d
+dim(crimes_ed)
+```
+
+As for the time series analysis, we will focus on *Case Number* dan *Date.YMD* variables. Also later, we will add *nOccurrence* which containing information about number of occurrences in given period. Previously, change the column names *Case NUmber* into *Case.Number* for convenience in later process. <br />
+
+```{r}
+dat<-crimes_ed[,c(2,23)]
+head(dat)
+```
+
+```{r}
+# Change name of case Number into Case.Number
+colnames(dat)[1]<-"Case.Number"
+
+# compute the aggregate of by the date
+dat$nOccurrence<-rep(1,length(dat$Case.Number))
+head(dat,10)
+datF <- aggregate(nOccurrence ~ Date.YMD, dat, sum)
+head(datF)
+```
+
+# Time Series Analysis
+
+## Check Trend and Seasonality
+
+For multiseasonal analysis we used xts library. From all three graphs below (weekly, monthly, and yearly) we can draw a conclusion that there is a declining trend and the monthly graph is the most suitable to visualize the seasonality that has its pattern each 12 months. <br />
+
+```{r}
+dat_xts <- as.xts(datF$nOccurrence, order.by = datF$Date.YMD)
+plot(dat_xts, main = "Number of Kidnapping Occurrence\n(Daily)", col = "deepskyblue")
+dat_xtsw <- apply.weekly(dat_xts,sum)
+plot(dat_xtsw, main = "Number of Kidnapping Occurrence\n(Weekly)", col = "coral2")
+dat_xtsm <- apply.monthly(dat_xts,sum)
+plot(dat_xtsm, main = "Number of Kidnapping Occurrence\n(Monthly)", col = "springgreen")
+dat_xtsy <- apply.yearly(dat_xts,sum)
+plot(dat_xtsy, main = "Number of Kidnapping Occurrence\n(Yearly)", col = "gold2")
+```
+
+For more detail, we display the first 36 months (3 years) data as follow:<br />
+
+```{r}
+head(dat_xtsm,36)
+```
+
+The data above shows the similar pattern every 12 months even it is no very obvious. From January 2001 to December 2001 there are up and down patterns. These patterns followed by the subsequent years. <br />
+This phenomenon can be visualized by window() function which we set the scope from 2001 to 2007. <br />
+
+```{r}
+begin<-index(dat_xtsm)[1]
+subsetDate<-index(dat_xtsm)[75]
+datF_ts<-ts(dat_xtsm,frequency = 12,start = c(year(begin),month(begin)))
+plot.ts(datF_ts,ylab="Number of Occurrence")
+plot.ts(window(datF_ts, start=c(year(begin),month(begin)), end=c(year(subsetDate),month(subsetDate))),ylab="Number of Occurrence")
+```
+
+Based on the time-series plotting, we can say the dataset is *additive model* because of the constant seasonal variation across the observed period. <br />
+The time series data can be splitted into observed, trend, seasonal, and random component by using decompose () function. <br />
+
+```{r}
+decompose(datF_ts) %>% 
+  plot()
+```
+
+## Test Moving Average Smoothing
+
+Simple Moving Average is based on how much weigth of past data will contribute to the future data.
+```{r}
+plot(datF_ts, type="l")
+datF_sma <- SMA(datF_ts, n=5)
+lines(datF_sma, col="red", lty=1)
+```
+
+### MAE, MAPE, and SSE
+
+The MAE, MAPE, and SSE from Moving Average model are 4.82, 17.75%, and 11,500 respectively. <br />
+
+```{r}
+# MAE (Mean Absolute Error)
+ind<-5:length(datF_sma)
+mean(abs(as.numeric(datF_ts[ind]-datF_sma[ind])), na.rm=T)
+```
+
+```{r}
+# MAPE (Mean Absolute Percentage Error)
+ind<-5:length(datF_sma)
+mean(abs(as.numeric((datF_ts[ind]-datF_sma[ind])/datF_ts[ind])), na.rm=T)*100
+```
+
+```{r}
+# SSE (Sum of Square Error)
+ind<-5:length(datF_sma)
+sum(as.numeric(datF_ts[ind]-datF_sma[ind])^2, na.rm=T)
+```
+
+### Check of Uniformity
+
+Through the *ACF (Autocorrelation Function)* we can tell the correlation of each datum for given time lag. *Ljung-box Test* is method to determine whether the residuals are random. The existence of *mean zero* and *constant variance* indicate that model cannot be furthed improved upon. <br />
+
+```{r}
+acf(datF_ts[ind]-datF_sma[ind], lag.max=20, na.action=na.pass)
+Box.test(datF_ts[ind]-datF_sma[ind], lag=20, type="Ljung-Box")
+
+hist(datF_ts[ind]-datF_sma[ind], breaks=20)
+abline(v=mean(datF_ts[ind]-datF_sma[ind], na.rm=T), col="goldenrod3", lwd=2)
+
+plot(datF_ts[ind]-datF_sma[ind], type="p", pch=19, cex=0.5)
+abline(h=mean(datF_ts[ind]-datF_sma[ind], na.rm=T), col="goldenrod3", lwd=2)
+```
+
+In ACF test, we can tell that there are 2 autocorrelation that are out of 95 confidence interval zone (blue dash line) aside of correlation at time lag 0. While in Ljung-box Test, the low p-value (0.0004944) indicates that our residuals are not random enough (showing dependence each other). The mean zero and constant are showing that  the model don't need any further improvement. Overall, the check of uniformity suggest our model to be processed further a bit. <br />
+
+## Test Holt-Winter Smoothing
+
+As mentioned above, our time series data is additive model which has a trend and not very obvious seasonal variation. Therefore, we can use exponential smoothing (Holt-Winter smoothing function) by adding alpha and beta. Since the seasonal variation is not very clear, set the *gamma=F*. That means in other word we are gonna use double exponential smoothing. In addition, we are gonna set also _l.start_ and _b.start_ parameters. Our predictive model quite resembles the actual time series data.<br />
+
+```{r}
+datF_hw <- HoltWinters(datF_ts,gamma = F, l.start=datF_ts[1], b.start=datF_ts[2]-datF_ts[1])
+plot(datF_hw, main = "Number Occurrence of Kidnapping\nin Chicago")
+legend("topright", legend = c("Actual", "Prediction"), fill=1:2, cex = 0.8)
+```
+
+### MAE, MAPE, and SSE
+
+The MAE, MAPE, and SSE from Exponential Smoothing model are 6.12, 22.16%, and 18,345 respectively. <br />
+
+```{r}
+# MAE (Mean Absolute Error)
+mean(abs(as.numeric(datF_ts[3:length(datF_ts)]-datF_hw$fitted[,2])), na.rm=T)
+```
+
+```{r}
+# MAPE (Mean Absolute Percentage Error)
+mean(abs(as.numeric((datF_ts[3:length(datF_ts)]-datF_hw$fitted[,2])/datF_ts[3:length(datF_ts)])), na.rm=T)*100
+```
+
+```{r}
+# SSE (Sum of Square Error)
+sum(as.numeric(datF_ts[3:length(datF_ts)]-datF_hw$fitted[,2])^2)
+```
+
+### Check of Uniformity
+
+In ACF test, we can tell that there are 2 autocorrelation that are out of 95 confidence interval zone (blue dash line) aside of correlation at time lag 0. While in Ljung-box Test, the low p-value (0.0548) indicates that our residuals are random enough (showing no dependence each other). The mean zero and constant are showing that  the model don't need any further improvement. Overall, the check of uniformity tell that the model does not need to be improved any further. <br />
+
+```{r}
+acf(datF_ts[3:length(datF_ts)]-datF_hw$fitted[,2], lag.max=20, na.action=na.pass)
+Box.test(datF_ts[3:length(datF_ts)]-datF_hw$fitted[,2], lag=20, type="Ljung-Box")
+
+hist(datF_ts[3:length(datF_ts)]-datF_hw$fitted[,2], breaks=20)
+abline(v=mean(datF_ts[3:length(datF_ts)]-datF_hw$fitted[,2], na.rm=T), col="goldenrod3", lwd=2)
+
+plot(datF_ts[3:length(datF_ts)]-datF_hw$fitted[,2], type="p", pch=19, cex=0.5)
+abline(h=mean(datF_ts[3:length(datF_ts)]-datF_hw$fitted[,2], na.rm=T), col="goldenrod3", lwd=2)
+```
+
+## Test ARIMA Smoothing
+
+### Stationary Test
+
+To understand whether the time series data is stasionary can apply ADF (Augmented Dickey-Fuller) test. <br />
+
+```{r}
+adf.test(datF_ts, alternative = "stationary")
+```
+
+From the ADF test we can determine that the data is _stasionary_. <br />
+
+### Seasonal ARIMA Model
+
+Thus, the further process is do auto.arima to know the best configuration of arima model for our data. <br />
+
+```{r}
+auto.arima(datF_ts)
+```
+
+From above result, can be known that the most optimal configuration is ARIMA(2,1,1)(2,0,1)/ <br />
+
+```{r}
+datF_arima <- Arima(datF_ts, order = c(2,1,1), seasonal = c(2,0,1))
+```
+
+```{r}
+plot(datF_ts, type="l")
+lines(datF_arima$fitted, col=2, lty=1)
+legend("topright", legend = c("Actual", "Prediction"), fill=c(1,2), cex = 0.7)
+```
+
+### MAE, MAPE, and SSE
+
+The MAE, MAPE, and SSE from Seasonal ARIMA model are 5.78, 18.92%, and 15,131 respectively. <br />
+
+```{r}
+# MAE (Mean Absolute Error)
+mean(abs(as.numeric(datF_ts-datF_arima$fitted)), na.rm=T)
+```
+
+```{r}
+# MAPE (Mean Absolute Percentage Error)
+mean(abs(as.numeric((datF_ts-datF_arima$fitted)/datF_arima$fitted)), na.rm=T)*100
+```
+
+```{r}
+# SSE (Sum of Square Error)
+sum(as.numeric(datF_arima$residuals)^2)
+```
+
+### Check of Uniformity
+
+In ACF test, we can tell that there is just 1 autocorrelation that are out of 95 confidence interval zone (blue dash line) aside of correlation at time lag 0. This good result actually. While in Ljung-box Test, the low p-value (0.5526) indicates that our residuals are random enough (showing no dependence each other). The mean zero and constant are showing that  the model don't need any further improvement. Overall, the check of uniformity tell that the model does not need to be improved any further. <br />
+
+```{r}
+acf(datF_arima$residuals, lag.max=20, na.action=na.pass)
+Box.test(datF_arima$residuals, lag=20, type="Ljung-Box")
+
+hist(datF_arima$residuals, breaks=20)
+abline(v=mean(datF_arima$residuals, na.rm=T), col="goldenrod3", lwd=2)
+
+plot(datF_arima$residuals, type="p", pch=19, cex=0.5)
+abline(h=mean(datF_arima$residuals, na.rm=T), col="goldenrod3", lwd=2)
+```
+
+# Conclusion
+
+*Is crime generally rising in Chicago in the past decade (last 10 years)?*
+
+Overall, the trend of this time-series data (we are focus on kidnapping primary type) is decreasing trend in the last 10 years. <br />
+
+*Is there a seasonal component to the crime rate?*
+
+There is vague seasonal variation. Therefore, the suitable hol-winter model is when we set the *gamma=F*. But the autoarima() function tell that the smoothing suitable for the data is seasonal arima model. <br />
+
+*Which time series method seems to capture the variation in your time series better? Explain your choice of algorithm and its key assumptions.*
+
+From above results, we can cnoclude that the most suitable model by far is moving average then followed by ARIMA based on the performance. That is because the lowest MAE, MAPE, and SSE is from moving average among the models. The MAE, MAPE, and SSE from moving average smoothing model are 4.82, 17.75%, and 11,500 respectively. <br />
+The moving average can be the proper approach for crime time series dataset, because the crime rate has no vivid seasonal variation. Added by the assumption of moving average smoothing that focus on weighting the past data for forecasting the future value. <br />
